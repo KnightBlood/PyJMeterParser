@@ -1,0 +1,383 @@
+import os
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from idlelib import window
+from itertools import product
+
+import style
+from lxml import etree
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+import string
+import sv_ttk
+import pywinstyles
+import logging
+
+# 定义一个函数，用于从字符串中提取以#号开头的部分
+def keep_after_hash(string):
+    return string.split('#')[-1] if '#' in string else string
+
+def keep_before_question_mark(string):
+    return string.split('?')[0] if '?' in string else string
+
+def keep_after_regex(pattern, string):
+    return re.sub(pattern, '', string) if re.search(pattern, string) else string
+
+# 定义一个JMeterParser类，用于解析JMX文件
+class JMeterParser:
+    def __init__(self, jmx_file, length, remove_header, pattern,replacement_frames):
+        self.jmx_file = jmx_file
+        self.test_elements = []
+        self.remove_header = remove_header
+        self.pattern = pattern
+        self.replacement_frames = replacement_frames
+        self.load_jmx(length)
+
+    # 加载JMX文件
+    def load_jmx(self, length):
+        try:
+            tree = etree.parse(self.jmx_file)
+            self.root = tree.getroot()  # 保持对根节点的引用
+            transaction_counter = 0
+
+            # 生成字母组合
+            transaction_names = self.generate_transaction_names(length)
+
+            # 遍历TransactionController节点
+            for transaction_controller in self.root.xpath(".//TransactionController"):
+                name = transaction_controller.get("testname")
+                transaction_counter += 1
+
+                # 如果TransactionController的数量小于等于生成的字母组合数量
+                if transaction_counter <= len(transaction_names):
+                    transaction_name = transaction_names[transaction_counter - 1]
+                    format_name = f"事务_{transaction_name}#{keep_after_hash(name)}"
+                    transaction_controller.set("testname", format_name)
+                    self.test_elements.append({
+                        "type": "Transaction Controller",
+                        "number": transaction_counter,
+                        "formatted_name": format_name,
+                    })
+
+                http_counter = 1  # 每个 TransactionController 下的 HTTPSamplerProxy 从 1 开始
+
+                # 查找当前 TransactionController 下的 HashTree 并获取其中的 HTTPSamplerProxy
+                for http_element in transaction_controller.xpath("./following-sibling::hashTree[1]/HTTPSamplerProxy"):
+                    if self.remove_header:
+                        for hash_tree in http_element.xpath("./following-sibling::hashTree[1]"):
+                            for header in hash_tree.xpath("./HeaderManager"):
+                                if len(header):
+                                    hash_tree.remove(header.getnext())
+                                    hash_tree.remove(header)
+                    # 如果 HTTPSamplerProxy 的路径中包含 "receiveHeartBeat.do"，则删除该节点
+                    if "receiveHeartBeat.do" in http_element.xpath("./stringProp[@name='HTTPSampler.path']"):
+                        transaction_controller.remove(http_element)
+                    else:
+                        http_name = http_element.get("testname")
+                        if self.pattern:
+                            http_name = keep_after_regex(self.pattern, http_name)
+                        http_formatted_name = f"{transaction_name}_{http_counter}#{keep_before_question_mark(keep_after_hash(http_name))}"
+                        http_element.set("testname", http_formatted_name)
+                        self.test_elements.append({
+                            "type": "HTTP Request",
+                            "number": http_counter,
+                            "formatted_name": http_formatted_name,
+                        })
+
+                        url_prop_element = http_element.xpath("./stringProp[@name='HTTPSampler.path']")[0]
+                        for old_value, new_value in self.replacement_frames:
+                            url_prop_element.text = url_prop_element.text.replace(old_value, new_value)
+
+                    http_counter += 1
+
+        except Exception as e:
+            logging.error(f"Error parsing JMX file: {e}")
+
+    # 生成指定长度的所有可能字母组合
+    @staticmethod
+    def generate_transaction_names(length=2):
+        """
+        生成指定长度的所有可能字母组合
+        :param length: 字母组合的长度
+        :return: 指定长度的字母组合列表
+        """
+        letters = string.ascii_uppercase  # 大写字母
+        return [''.join(combination) for combination in product(letters, repeat=length)]
+
+    # 保存JMX文件
+    def save_jmx(self, output_file):
+        try:
+            tree = etree.ElementTree(self.root)
+            tree.write(output_file, pretty_print=True, xml_declaration=True, encoding="UTF-8")
+            return True
+        except Exception as e:
+            logging.error(f"Error saving JMX file: {e}")
+            return False
+
+# 定义一个App类，用于创建GUI界面
+class App:
+    def __init__(self, master):
+        self.parsers = {}
+        self.master = master
+        master.title("JMeter JMX Parser")
+        master.geometry("800x600")  # 设置窗口大小
+
+        # 创建一个主框架
+        main_frame = ttk.Frame(master, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # 文件路径输入框
+        file_frame = ttk.Frame(main_frame)
+        file_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.label = ttk.Label(file_frame, text="选择 JMX 文件或文件夹:")
+        self.label.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.file_path = ttk.Entry(file_frame, width=50)
+        self.file_path.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.browse_file_button = ttk.Button(file_frame, text="选择文件", command=self.browse_file)
+        self.browse_file_button.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.browse_folder_button = ttk.Button(file_frame, text="选择文件夹", command=self.browse_folder)
+        self.browse_folder_button.pack(side=tk.LEFT, padx=(0, 10))
+
+        # 字母组合长度输入框
+        length_frame = ttk.Frame(main_frame)
+        length_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.length_label = ttk.Label(length_frame, text="输入字母组合长度:")
+        self.length_label.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.length_entry = ttk.Entry(length_frame, width=5)
+        self.length_entry.insert(0, "2")
+        self.length_entry.pack(side=tk.LEFT, padx=(0, 10))
+
+        # 正则表达式输入框
+        regex_frame = ttk.Frame(main_frame)
+        regex_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.regex_label = ttk.Label(regex_frame, text="输入正则表达式:")
+        self.regex_label.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.regex_entry = ttk.Entry(regex_frame, width=50)
+        self.regex_entry.insert(0, r"http://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
+        self.regex_entry.pack(side=tk.LEFT, padx=(0, 10))
+
+        # 添加复选框
+        self.remove_header_var = tk.BooleanVar(value=False)
+        remove_header_checkbox = ttk.Checkbutton(length_frame, text="是否移除请求的Header", variable=self.remove_header_var)
+        remove_header_checkbox.pack(side=tk.LEFT, pady=(10, 10))
+
+        # 替换内容输入框
+        self.replacement_frames = []
+        self.add_replacement_frame()
+
+        # 按钮框架
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.add_replacement_button = ttk.Button(button_frame, text="增加替换项", command=self.add_replacement_frame)
+        self.add_replacement_button.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.remove_replacement_button = ttk.Button(button_frame, text="删除替换项", command=self.remove_replacement_frame)
+        self.remove_replacement_button.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.parse_button = ttk.Button(button_frame, text="解析 JMX", command=self.parse_jmx)
+        self.parse_button.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.save_button = ttk.Button(button_frame, text="保存 JMX", command=self.save_jmx)
+        self.save_button.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.save_all_button = ttk.Button(button_frame, text="批量保存 JMX", command=self.save_all_jmx)
+        self.save_all_button.pack(side=tk.LEFT, padx=(0, 10))
+
+        # 创建Notebook组件
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        # 进度条
+        self.progress = ttk.Progressbar(main_frame, orient="horizontal", length=300, mode="determinate")
+        self.progress.pack(pady=(10, 0))
+
+    # 添加新的标签页
+    def add_tab(self, tab_name, content):
+        new_tab = tk.Text(self.notebook, height=15, width=60)
+        new_tab.insert(tk.END, content)
+        new_tab.pack(fill=tk.BOTH, expand=True)
+        self.notebook.add(new_tab, text=tab_name)
+
+    def add_replacement_frame(self):
+        frame = ttk.Frame(self.master)
+        frame.pack(fill=tk.X, pady=(0, 10))
+
+        label1 = ttk.Label(frame, text="被替换内容:")
+        label1.pack(side=tk.LEFT, padx=(0, 10))
+
+        entry1 = ttk.Entry(frame, width=30)
+        entry1.pack(side=tk.LEFT, padx=(0, 10))
+
+        label2 = ttk.Label(frame, text="替换内容:")
+        label2.pack(side=tk.LEFT, padx=(0, 10))
+
+        entry2 = ttk.Entry(frame, width=30)
+        entry2.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.replacement_frames.append((frame, entry1, entry2))
+
+    def remove_replacement_frame(self):
+        if self.replacement_frames:
+            frame, entry1, entry2 = self.replacement_frames.pop()
+            frame.destroy()
+
+    def browse_file(self):
+        file_path = filedialog.askopenfilename(filetypes=[("JMX files", "*.jmx")])
+        if file_path:
+            self.file_path.delete(0, tk.END)
+            self.file_path.insert(0, file_path)
+
+    def browse_folder(self):
+        folder_path = filedialog.askdirectory()
+        if folder_path:
+            self.file_path.delete(0, tk.END)
+            self.file_path.insert(0, folder_path)
+
+    def parse_jmx(self):
+        path = self.file_path.get()
+        length_str = self.length_entry.get()
+        if not path:
+            messagebox.showerror("错误", "请先选择一个 JMX 文件或文件夹")
+            return
+
+        if not length_str.isdigit() or int(length_str) < 1:
+            messagebox.showerror("错误", "请输入有效的字母组合长度（大于0的整数）")
+            return
+
+        length = int(length_str)
+        pattern = self.regex_entry.get()
+        remove_header = self.remove_header_var.get()
+
+        # 清空 notebook 中的所有标签页
+        while self.notebook.index("end") > 0:
+            self.notebook.forget(0)
+
+        # 清空 parsers 字典
+        self.parsers.clear()
+
+        if os.path.isdir(path):
+            self.parse_directory(path, length, remove_header, pattern)
+        else:
+            self.parse_single_file(path, length, remove_header, pattern)
+
+
+    # 解析单个文件
+    def parse_single_file(self, jmx_file, length, remove_header, pattern):
+        replacement_frames = [(entry1.get(), entry2.get()) for _, entry1, entry2 in self.replacement_frames]
+        parser = JMeterParser(jmx_file, length, remove_header, pattern, replacement_frames)
+        output = ""
+        for element in parser.test_elements:
+            output += f"{element['type']} #{element['number']}: {element['formatted_name']}\n"
+
+        file_name = os.path.basename(jmx_file)
+        tab_name = f"解析结果 - {file_name}"
+
+        # 检查是否存在相同的标签页
+        existing_tab = None
+        for i in range(self.notebook.index("end")):
+            if self.notebook.tab(i, "text") == tab_name:
+                existing_tab = i
+                break
+
+        if existing_tab is not None:
+            # 更新现有标签页的内容
+            existing_text_widget = self.notebook.nametowidget(self.notebook.tabs()[existing_tab])
+            existing_text_widget.delete(1.0, tk.END)
+            existing_text_widget.insert(tk.END, output)
+        else:
+            # 添加新的标签页
+            new_tab = tk.Text(self.notebook, height=15, width=60)
+            new_tab.insert(tk.END, output)
+            new_tab.pack(fill=tk.BOTH, expand=True)
+            self.notebook.add(new_tab, text=tab_name)
+
+        self.parsers[jmx_file] = parser
+
+    # 解析目录中的所有JMX文件
+    def parse_directory(self, directory, length, remove_header, pattern):
+        jmx_files = [os.path.join(directory, f) for f in os.listdir(directory) if f.endswith('.jmx')]
+        total_files = len(jmx_files)
+        self.progress["maximum"] = total_files
+        self.progress["value"] = 0  # 初始化进度条
+
+        for file in jmx_files:
+            try:
+                self.parse_single_file(file, length, remove_header, pattern)
+                self.progress["value"] += 1  # 更新进度条
+                self.master.update_idletasks()  # 确保界面更新
+            except Exception as e:
+                logging.error(f"处理 {file} 时出错: {e}")
+                messagebox.showerror("错误", f"处理 {file} 时出错: {e}")
+
+        messagebox.showinfo("完成", "所有文件解析完成")
+
+
+
+    # 保存JMX文件
+    def save_jmx(self):
+        if not self.parsers:
+            messagebox.showerror("错误", "请先解析一个 JMX 文件")
+            return
+
+        selected_tab = self.notebook.select()
+        tab_text = self.notebook.tab(selected_tab, "text")
+        jmx_file = next((file for file, parser in self.parsers.items() if f"解析结果 - {os.path.basename(file)}" == tab_text), None)
+
+        if not jmx_file:
+            messagebox.showerror("错误", "无法确定要保存的 JMX 文件")
+            return
+
+        output_file = filedialog.asksaveasfilename(defaultextension=".jmx", filetypes=[("JMX files", "*.jmx")])
+        if output_file:
+            parser = self.parsers[jmx_file]
+            success = parser.save_jmx(output_file)
+            if success:
+                messagebox.showinfo("成功", f"JMX 文件已保存到 {output_file}")
+            else:
+                logging.error("保存 JMX 文件时出错")
+                messagebox.showerror("错误", "保存 JMX 文件时出错")
+    # 批量保存所有解析后的JMX文件
+    def save_all_jmx(self):
+        if not self.parsers:
+            messagebox.showerror("错误", "请先解析一个 JMX 文件")
+            return
+
+        output_dir = filedialog.askdirectory()
+        if not output_dir:
+            return
+
+        total_files = len(self.parsers)
+        self.progress["maximum"] = total_files
+        self.progress["value"] = 0  # 初始化进度条
+
+        for jmx_file, parser in self.parsers.items():
+            try:
+                output_file = os.path.join(output_dir, os.path.basename(jmx_file))
+                success = parser.save_jmx(output_file)
+                if success:
+                    self.progress["value"] += 1  # 更新进度条
+                    self.master.update_idletasks()  # 确保界面更新
+                else:
+                    logging.error(f"保存 {jmx_file} 时出错")
+                    messagebox.showerror("错误", f"保存 {jmx_file} 时出错")
+            except Exception as e:
+                logging.error(f"保存 {jmx_file} 时出错: {e}")
+                messagebox.showerror("错误", f"保存 {jmx_file} 时出错: {e}")
+
+        messagebox.showinfo("成功", f"所有 JMX 文件已保存到 {output_dir}")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    sv_ttk.set_theme("light")  # 设置主题
+    #pywinstyles.apply_style(root, "acrylic")
+    app = App(root)
+    root.mainloop()

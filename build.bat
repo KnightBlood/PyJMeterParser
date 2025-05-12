@@ -1,0 +1,1 @@
+pyinstaller -F -w --onefile --collect-submodules ui --hidden-import=ui --hidden-import=ui.main_window app.py
