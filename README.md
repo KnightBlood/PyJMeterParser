@@ -3,6 +3,9 @@
 ## 项目说明
 基于Python实现的JMeter扩展工具，包含业务逻辑解析、UI界面和打包模块
 
+## 开源协议
+[MIT License](https://opensource.org/licenses/MIT)
+
 ## 目录结构
 ```
 ├── business        # 业务逻辑模块
