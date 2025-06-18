@@ -28,6 +28,7 @@ class App(BaseApp):
 
         # 配置网格列权重
         main_frame.grid_columnconfigure(0, weight=1)
+        main_frame.grid_rowconfigure(4, weight=1)
         
         # 文件路径输入框
         file_frame = ttk.Frame(main_frame)
