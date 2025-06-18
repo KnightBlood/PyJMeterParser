@@ -18,27 +18,22 @@
 │   ├── main_window.py       # Tkinter基础实现
 │   ├── nicegui_main_window.py # NiceGUI专用实现
 │   ├── flet_main_window.py    # Flet专用实现
+│   ├── wx_main_window.py      # wxPython专用实现
 │   └── pyside6_main_window.py # PySide6专用实现
-├── utils/           # 工具类库
+├── utils/           # 工具类
 ├── app.py           # 主程序入口
 ├── requirements.txt # 核心依赖列表
 └── README.md        # 项目文档
 ```
 
 ## 🛠️ 安装指南
-```bash
+```
 # 安装核心依赖
 pip install -r requirements.txt
-
-# 安装NiceGUI扩展支持（可选）
-pip install nicegui pywebview
-
-# 安装Flet扩展支持（可选）
-pip install flet
 ```
 
 ## 🚀 快速启动
-```bash
+```
 # 默认启动（弹出UI选择窗口）
 python app.py
 
@@ -47,6 +42,7 @@ python app.py --ui tk          # 启动Tkinter版本
 python app.py --ui nicegui     # 启动NiceGUI版本
 python app.py --ui pyside6     # 启动PySide6版本
 python app.py --ui flet        # 启动Flet版本
+python app.py --ui wx         # 启动wxPython版本
 ```
 
 ## ⚙️ 特性配置
@@ -56,7 +52,7 @@ python app.py --ui flet        # 启动Flet版本
 - 热重载：已禁用（生产环境优化）
 
 ## 📌 注意事项
-1. **Python版本要求**：NiceGUI版本需要Python 3.12+
+1. **Python版本要求**：需要Python 3.12+
 2. **信号处理异常**：请始终在主进程中启动应用
 3. **窗口大小控制**：修改ui/nicegui_main_window.py中的JavaScript脚本
 4. **跨平台兼容性**：Windows/Mac/Linux通用，推荐使用虚拟环境
